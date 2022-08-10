@@ -1,0 +1,42 @@
+{
+  "City": "\u201CLviv, Kleparivska 35, 4\u201D",
+  "Services": {
+    "Name": "Water",
+    "Payers": {
+      "Name": "John Doe",
+      "Payment": 500,
+      "Date": "2022-01-01T00:27:00",
+      "Account_Number": 1234567
+    },
+    "Total": 0
+  },
+  "Total": 0
+}
+{
+  "City": "\u201CLviv, Kleparivska 40, 1\u201D",
+  "Services": {
+    "Name": "Heat",
+    "Payers": {
+      "Name": "Mike Wiksen",
+      "Payment": 720,
+      "Date": "2022-01-05T00:27:00",
+      "Account_Number": 7654321
+    },
+    "Total": 0
+  },
+  "Total": 0
+}
+{
+  "City": "\u201CLviv, Gorodotska 120, 3\u201D",
+  "Services": {
+    "Name": "Parking",
+    "Payers": {
+      "Name": "Nick Potter",
+      "Payment": 880,
+      "Date": "2022-01-03T00:25:00",
+      "Account_Number": 3334444
+    },
+    "Total": 0
+  },
+  "Total": 0
+}

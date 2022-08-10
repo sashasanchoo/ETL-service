@@ -30,6 +30,7 @@ namespace ETL
                         if (token.IsCancellationRequested)
                         {
                             Console.WriteLine("exit request");
+                            //token.ThrowIfCancellationRequested();
                             return;
                         }
                     }
