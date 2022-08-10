@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "dgSpecHash": "NHMCb0D0qgxOUUaawjCnPUVaLrm4MFiJNrkKfayMqktj9seWn7PzX3knGtnZ7eVYU1FCg/FG48Bf7CFTLzQAFA==",
+  "success": true,
+  "projectFilePath": "C:\\Users\\Користувач\\source\\repos\\ETL\\ETL\\ETL.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Користувач\\.nuget\\packages\\microsoft.win32.systemevents\\6.0.0\\microsoft.win32.systemevents.6.0.0.nupkg.sha512",
+    "C:\\Users\\Користувач\\.nuget\\packages\\system.configuration.configurationmanager\\6.0.0\\system.configuration.configurationmanager.6.0.0.nupkg.sha512",
+    "C:\\Users\\Користувач\\.nuget\\packages\\system.drawing.common\\6.0.0\\system.drawing.common.6.0.0.nupkg.sha512",
+    "C:\\Users\\Користувач\\.nuget\\packages\\system.security.accesscontrol\\6.0.0\\system.security.accesscontrol.6.0.0.nupkg.sha512",
+    "C:\\Users\\Користувач\\.nuget\\packages\\system.security.cryptography.protecteddata\\6.0.0\\system.security.cryptography.protecteddata.6.0.0.nupkg.sha512",
+    "C:\\Users\\Користувач\\.nuget\\packages\\system.security.permissions\\6.0.0\\system.security.permissions.6.0.0.nupkg.sha512",
+    "C:\\Users\\Користувач\\.nuget\\packages\\system.windows.extensions\\6.0.0\\system.windows.extensions.6.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}
