@@ -1,140 +1,457 @@
-﻿using System.Globalization;
+﻿using System;
+using System.Configuration;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Configuration;
 
 namespace ETL
 {
-    public delegate StringBuilder CustomOperationWithValidDataDelegate();
-
     public class Program
     {
         static void Main(string[] args)
         {
+            Console.WriteLine("ETL running...");
+            DirectoriesManager directoriesManager = DirectoriesManager.GetInstance();
+            directoriesManager.CreateDailyDirectory();
+            LogFileManager logManager = LogFileManager.GetInstance();
+            RequiredForValidationOperationsRunner runner = new RequiredForValidationOperationsRunner();
+            ExitRequestWaitingRunner exitRequestWaitingRunner = new ExitRequestWaitingRunner();
+            MidnightResetRunner midnightWorker = new MidnightResetRunner();
+            DataToJsonConverter concreteDataToJsonConverter = new DataToJsonConverter();
+            CancellationTokenHolder cancellationTokenHolder = CancellationTokenHolder.GetInstance();
             try
             {
-                ValidationManager toValidate = new ValidationManager();
-                DirectoriesManager.CreateDailyDirectory();
-                CancellationTokenSource cancelTokenSource = new CancellationTokenSource();
-                CancellationToken token = cancelTokenSource.Token;
-                Task main = new Task(() =>
+                Task.Run(() =>
                 {
-                    while (true)
+                   exitRequestWaitingRunner.WaitForExitRequest(cancellationTokenHolder.GetCancellationTokenSource());
+                }, cancellationTokenHolder.GetToken());
+                Task.Run(() =>
+                {
+                    midnightWorker.CheckIfMidnight(cancellationTokenHolder.GetCancellationTokenSource(), directoriesManager.CreateDailyDirectory, directoriesManager.GetDailyDirectoryInfo(), logManager.CreateLogFile, logManager.Reset); ;
+                }, cancellationTokenHolder.GetToken());
+                do
+                {
+                    try
                     {
-                        toValidate.ValidFilesCollection = toValidate.DirValidator.CheckConcreteDirectory(DirectoriesManager.FolderAPath, LogManager.InvalidFilesList);
-                        if (toValidate.ValidFilesCollection.Count() > 0)
+                        runner.ValidFilesCollection = runner.DirValidator.CheckConcreteDirectory(directoriesManager.GetFolderAPath(), logManager.GetInvalidFilesList());
+                        if (runner.ValidFilesCollection.Count() > 0)
                         {
-                            toValidate.BeginValidationProcess(DirectoriesManager.FolderAPath, toValidate.CustomOperationWithValidDataDlg);
-                        }
-                        if (token.IsCancellationRequested)
-                        {
-                            Console.WriteLine("exit request");
-                            //token.ThrowIfCancellationRequested();
-                            return;
+                            runner.BeginValidationProcess(concreteDataToJsonConverter.ConvertValidDataToJsonObjects, directoriesManager.GetDailyDirectoryInfo().FullName, logManager.IncreaseFoundErrors, concreteDataToJsonConverter.ValidDataCollection);
                         }
                     }
-                }, token);
-               
-                Task menu = new Task(() =>
-                {
-                    while (true)
-                    {
-                        string answer = Console.ReadLine();
-                        switch (answer)
-                        {
-                            case "exit":
-                                {
-                                    cancelTokenSource.Cancel();
-                                    break;
-                                }
-                        }
-                    }
-                }, token);
-                while (true)
-                {
-                    main.Start();
-                    menu.Start();
-                    main.Wait();
-                }
+                    catch (Exception)
+                    {}
+                   
+                } while (ExitRequestWaitingRunner.ExitRequested == false);
             }
-            catch (Exception ex)
+            catch (Exception)
+            {}
+            finally
             {
-                Console.WriteLine(ex.Message);
-            }     
+                logManager.CreateLogFile(directoriesManager.GetDailyDirectoryInfo());
+            }
         }
     }
-    static class DirectoriesManager
+    //AncillaryItems
+    #region
+    public class MidnightResetRunner
     {
-        public static DirectoryInfo DailyDirectoryInfo { get; private set; }
-
-        public static string FolderAPath { get; } = ConfigurationManager.AppSettings["pathToFolderA"];
-        public static string FolderBPath { get; } = ConfigurationManager.AppSettings["pathToFolderB"];
-
-        public static void CreateDailyDirectory()
+        private const string midnight = "23:59:59";
+        public void CheckIfMidnight(CancellationTokenSource cts, Action createDailyDirectory, DirectoryInfo dailyDirectoryInfo, Action<DirectoryInfo> createLogFile, Action reset)
         {
-            DailyDirectoryInfo = Directory.CreateDirectory($"{FolderBPath}{DateTime.Now.ToShortDateString().Replace('.', '-')}");
-        }
-    }
-    static class LogManager
-    {
-        public static int FoundErrors { get; set; }
-        public static List<string> InvalidFilesList { get; set; } = new List<string>();
-        public static void CreateLogFile(DirectoryInfo dailyDirectory)
-        {
-            File.AppendAllText(@$"{dailyDirectory.FullName}\meta.log", $"found_errors: {FoundErrors}\n");
-            File.AppendAllText(@$"{dailyDirectory.FullName}\meta.log", $"invalid files:\n{string.Join(" ", string.Join("\n", InvalidFilesList))}");
-        }
-    }
+            while (true)
+            {
+                try
+                {
+                    if (DateTime.Now.ToLongTimeString() == midnight)
+                    {
+                        createLogFile(dailyDirectoryInfo);
+                        reset.Invoke();
+                        Thread.Sleep(1020);
+                        createDailyDirectory.Invoke();
+                    }
+                    cts.Token.ThrowIfCancellationRequested();
+                }
+                catch (OperationCanceledException)
+                {
+                    ExitRequestWaitingRunner.ExitRequested = true;
+                }
 
-    public class ConcretePatternMatchSearcher
-    {
-        public Match Match { get; private set; }
+            }
 
-        public void FindMatch(string ToFindMatch, string pattern)
-        {
-            Match = Regex.Match(ToFindMatch, pattern);
         }
     }
-    class StreamDecorator: IDisposable
+    public sealed class CancellationTokenHolder
     {
-        private Stream stream;
-        private IAsyncResult result;
-        private string data;
-        private byte[] readBuff;
-        private byte[] writeBuff;
+        private static CancellationTokenHolder instance;
+
+        private static CancellationTokenSource cancellationTokenSource;
+
+        private static CancellationToken token;
+        private CancellationTokenHolder() { }
+
+        public static CancellationTokenHolder GetInstance()
+        {
+            if (instance == null)
+            {
+                instance = new CancellationTokenHolder();
+                cancellationTokenSource = new CancellationTokenSource();
+                token = cancellationTokenSource.Token;
+            }
+            return instance;
+        }
+        public CancellationToken GetToken()
+        {
+            return token;
+        }
+        public CancellationTokenSource GetCancellationTokenSource()
+        {
+            return cancellationTokenSource;
+        }
+
+    }
+    public class ExitRequestWaitingRunner
+    {
+        public static bool ExitRequested { get; set; }
+        public void WaitForExitRequest(CancellationTokenSource cts)
+        {
+            while (true)
+            {
+                try
+                {
+                    string answer = Console.ReadLine();
+                    switch (answer)
+                    {
+                        case "exit":
+                            {
+                                cts.Cancel();
+                                break;
+                            }
+                        default:
+                            {
+                                Console.Clear();
+                                Console.WriteLine("Wrong command");
+                                break;
+                            }
+                    }
+                    cts.Token.ThrowIfCancellationRequested();
+                }
+                catch (OperationCanceledException)
+                {
+                    ExitRequested = true;
+                    return;
+                }
+
+            }
+        }
+    }
+    public sealed class LogFileManager
+    {
+        private static LogFileManager instance;
+
+        private static string logFileName;
+        private static int foundErrors;
+        private static List<string> invalidFilesList;
+        private LogFileManager() { }
+
+        public static LogFileManager GetInstance()
+        {
+            if (instance == null)
+            {
+                instance = new LogFileManager();
+                logFileName = "meta.log";
+                invalidFilesList = new List<string>();
+            }
+            return instance;
+        }
+        public void CreateLogFile(DirectoryInfo dailyDirectory)
+        {
+            File.AppendAllText(@$"{dailyDirectory.FullName}\{logFileName}", $"found_errors: {foundErrors}\n");
+            File.AppendAllText(@$"{dailyDirectory.FullName}\{logFileName}", $"invalid files:\n{string.Join(" ", string.Join("\n", invalidFilesList))}");
+        }
+        public void Reset()
+        {
+            foundErrors = 0;
+            invalidFilesList.Clear();
+        }
+        public void IncreaseFoundErrors()
+        {
+            foundErrors++;
+        }
+        public List<string> GetInvalidFilesList()
+        {
+            return invalidFilesList;
+        }
+    }
+    public class RequiredForValidationOperationsRunner
+    {
+        public DirectoryValidator DirValidator { get; private set; }
+        private ValidFilesManager ValidFilesManager { get; set; }
+        private ValidFileDataReader ValidFileDataReader { get; set; }
+        public IEnumerable<FileSystemInfo> ValidFilesCollection { get; set; }
+
+        public RequiredForValidationOperationsRunner()
+        {
+            DirValidator = new DirectoryValidator();
+            ValidFileDataReader = new ValidFileDataReader();
+            ValidFilesManager = new ValidFilesManager();
+            ValidFilesCollection = new List<FileSystemInfo>();
+
+        }
+        public void BeginValidationProcess(Func<StringBuilder> customOperationWithValidData, string targetDirectoryPath, Action increaseErrors, ICollection<string> validDataCollection)
+        {
+            foreach (var validFile in ValidFilesCollection)
+            {
+                ValidFileDataValidator.CheckDataFromConcreteValidFile(ValidFileDataReader.ReadFromConcreteValidFile(validFile.FullName), validDataCollection, Patterns.MainPattern, increaseErrors);
+                ValidFilesManager.StartWriteValidFiles(validFile, customOperationWithValidData.Invoke(), targetDirectoryPath);
+            }
+        }
+    }
+    public class StreamDecorator : IDisposable
+    {
+        private Stream Stream { get; set; }
+        private string Data { get; set; }
+        private byte[] ReadBuff { get; set; }
+        private byte[] WriteBuff { get; set; }
+
         public StreamDecorator(Stream stream)
         {
-            this.stream = stream;
+            this.Stream = stream;
         }
         public void Dispose()
         {
-            stream?.Dispose();
+            Stream?.Dispose();
         }
         public string Read()
         {
-            readBuff = new byte[stream.Length];
-            result = stream.BeginRead(readBuff, 0, readBuff.Length, ReadIsComplete, null);
-            data = Encoding.UTF8.GetString(readBuff, 0, readBuff.Length);
-            return data;
-        }
-        public void ReadIsComplete(IAsyncResult res)
-        {
-            Console.WriteLine($"Reading complete. Thread id = {Thread.CurrentThread.ManagedThreadId} started at {DateTime.Now.ToLongTimeString()}");
-
+            ReadBuff = new byte[Stream.Length];
+            Stream.ReadAsync(ReadBuff, 0, ReadBuff.Length).Wait();
+            Data = Encoding.UTF8.GetString(ReadBuff, 0, ReadBuff.Length);
+            return Data;
         }
         public bool Write(string data)
         {
-            writeBuff = Encoding.UTF8.GetBytes(data);
-            result = stream.BeginWrite(writeBuff, 0, writeBuff.Length, WriteIsComplete, null);   
+            WriteBuff = Encoding.UTF8.GetBytes(data);
+            Stream.WriteAsync(WriteBuff, 0, WriteBuff.Length).Wait();;
             return true;
         }
-        public void WriteIsComplete(IAsyncResult res)
+    }
+    #endregion
+    //CustomBusinessModel
+    #region
+    public interface IPaymentBuilder
+    {
+        void BuildCity(string city);
+        void BuildServices(Service service);
+        void BuildTotal(long total);
+        void Reset();
+        Payment GetPayment();
+    }
+    public interface IServicesBuilder
+    {
+        void BuildName(string name);
+        void BuildPayer(Payer payer);
+        void BuildTotal(long total);
+        void Reset();
+        Service GetService();
+    }
+    public interface IPayerBuilder
+    {
+        void BuildName(string name);
+        void BuildPayment(decimal payment);
+        void BuildDate(DateTime date);
+        void BuildAccountNumber(long accountNumber);
+        void Reset();
+        Payer GetPayer();
+
+    }
+    public class PaymentBuilder : IPaymentBuilder
+    {
+        private Payment payment = new Payment();
+        public PaymentBuilder()
         {
-            Console.WriteLine($"Writing complete. Thread id = {Thread.CurrentThread.ManagedThreadId} started at {DateTime.Now.ToLongTimeString()}");
+            Reset();
+        }
+        public void Reset()
+        {
+            payment = new Payment();
+        }
+        public void BuildCity(string city)
+        {
+            payment.City = city;
+        }
+
+        public void BuildServices(Service service)
+        {
+            payment.Services = service;
+        }
+
+        public void BuildTotal(long total)
+        {
+            payment.Total = total;
+        }
+        public Payment GetPayment()
+        {
+            Payment result = payment;
+            Reset();
+            return result;
+        }
+    }
+    public class ServicesBuilder : IServicesBuilder
+    {
+        private Service service = new Service();
+        public ServicesBuilder()
+        {
+            Reset();
+        }
+        public void Reset()
+        {
+            service = new Service();
+        }
+        public void BuildName(string name)
+        {
+            service.Name = name;
+        }
+
+        public void BuildPayer(Payer payer)
+        {
+            service.Payers = payer;
+        }
+
+        public void BuildTotal(long total)
+        {
+            service.Total = total;
+        }
+        public Service GetService()
+        {
+            Service result = service;
+            Reset();
+            return result;
         }
     }
 
+    public class PayerBuilder : IPayerBuilder
+    {
+        private Payer payer = new Payer();
+        public PayerBuilder()
+        {
+            Reset();
+        }
+        public void Reset()
+        {
+            payer = new Payer();
+        }
+        public void BuildAccountNumber(long accountNumber)
+        {
+            payer.Account_Number = accountNumber;
+        }
+
+        public void BuildDate(DateTime date)
+        {
+            payer.Date = date;
+        }
+
+        public void BuildName(string name)
+        {
+            payer.Name = name;
+        }
+
+        public void BuildPayment(decimal payment)
+        {
+            payer.Payment = payment;
+        }
+        public Payer GetPayer()
+        {
+            Payer result = payer;
+            Reset();
+            return result;
+        }
+    }
+    public class Payment
+    {
+        public string City { get; set; }
+        public Service Services { get; set; }
+        public decimal Total { get; set; }
+    }
+    public class Service
+    {
+        public string Name { get; set; }
+        public Payer Payers { get; set; }
+        public decimal Total { get; set; }
+
+    }
+    public class Payer
+    {
+        public string Name { get; set; }
+        public decimal Payment { get; set; }
+        public DateTime Date { get; set; }
+        public long Account_Number { get; set; }
+    }
+    #endregion
+    //Extract
+    #region
+    public static class FileSystemInfoExtension
+    {
+        public static bool FileValidation(this FileSystemInfo difInfo)
+        {
+            if (difInfo.Extension == ".txt")
+            {
+                return true;
+            }
+            return false;
+        }
+    }
+    public class DirectoryValidator
+    {
+        public IEnumerable<FileSystemInfo> CheckConcreteDirectory(string path, List<string> invalidFiles)
+        {
+            DirectoryInfo validFiles = new DirectoryInfo(path);
+            invalidFiles.AddRange(validFiles.GetFileSystemInfos().Where(e => !e.FileValidation() && !invalidFiles.Contains(e.FullName)).Select(f => f.FullName));
+            return validFiles.GetFileSystemInfos().Where(e => e.FileValidation());
+        }
+    }
+    public class ValidFileDataValidator
+    {
+        public static void CheckDataFromConcreteValidFile(string DataToCheck, ICollection<string> validDataHolder, string pattern, Action increaseErrors)
+        {
+            try
+            {
+                string[] splitedValidDataHolder = DataToCheck.Split("\n", StringSplitOptions.RemoveEmptyEntries);
+                validDataHolder?.Clear();
+                foreach (var item in splitedValidDataHolder)
+                {
+                    if (Regex.Match(item, pattern).Success)
+                    {
+                        validDataHolder?.Add(item);
+                    }
+                    else
+                    {
+                        increaseErrors.Invoke();
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+        }
+    }
+
+    public class ValidFileDataReader
+    {
+        public string ReadFromConcreteValidFile(string path)
+        {
+            using (StreamDecorator sd = new StreamDecorator(new FileStream(path, FileMode.Open)))
+            {
+                return sd.Read();
+            }
+        }
+    }
+    #endregion
+    //Transform
+    #region
     static class Patterns
     {
         public static string MainPattern { get; } = @"[a-zA-Z]+\,\s+[a-zA-Z]+\,\s+(“|”)[a-zA-Z0-9\,\s]+(“|”)\,\s+\d+\.\d{1,2}\,\s+\d{4}-\d{2}-\d{2}\,\s(“|”)?[\d]+(“|”)?\,\s+[a-zA-Z]+";
@@ -150,90 +467,41 @@ namespace ETL
 
         public static string ServiceName { get; } = @"[a-zA-Z]+";
     }
-    public class ValidationManager
+    public class ConcretePatternMatchSearcher
     {
-        public CustomOperationWithValidDataDelegate CustomOperationWithValidDataDlg { get; set; }
-        public int CheckedFilesCounter { get; set; }
+        public Match Match { get; private set; }
 
-        public DirectoryValidator DirValidator { get; set; }
-
-        public ValidDataWriter ValidDataWriter { get; set; }
-
-        public CustomJsonConverter ConcreteDataToJsonConverter { get; set; }
-
-        public ValidFilesManager ValidFilesManager { get; set; }
-        public ValidFileDataReader ValidFileDataReader { get; set; }
-        public IEnumerable<FileSystemInfo> ValidFilesCollection { get; set; }
-
-        public ValidationManager()
+        public void FindMatch(string ToFindMatch, string pattern)
         {
-            DirValidator = new DirectoryValidator();
-            ValidDataWriter = new ValidDataWriter();
-            ValidFileDataReader = new ValidFileDataReader();
-            ConcreteDataToJsonConverter = new CustomJsonConverter();
-            CustomOperationWithValidDataDlg = new CustomOperationWithValidDataDelegate(ConcreteDataToJsonConverter.ConvertValidLinesToJsonObjects);
-            ValidFilesManager = new ValidFilesManager();
-            ValidFilesCollection = new List<FileSystemInfo>();
-
-        }
-        public void BeginValidationProcess(string path, CustomOperationWithValidDataDelegate CustomOperationWithValidData)
-        {
-            foreach (var validFile in ValidFilesCollection)
-            {
-                DataValidator.CheckDataFromConcreteValidFile(ValidFileDataReader.ReadFromConcreteValidFile(validFile.FullName), ConcreteDataToJsonConverter.ValidDataList);
-                CheckedFilesCounter = ValidFilesManager.StartWriteNewAndRenameOldFiles(validFile, CustomOperationWithValidData.Invoke(), CheckedFilesCounter);
-            }
-            DirectoriesManager.CreateDailyDirectory();
-            LogManager.CreateLogFile(DirectoriesManager.DailyDirectoryInfo);
+            Match = Regex.Match(ToFindMatch, pattern);
         }
     }
-
-    public class ValidFilesManager
+    public class DataToJsonConverter
     {
-        public ValidDataWriter ValidDataWriter { get; set; }
-        public CheckedFilesMarker AlreadyCheckedFilesMarker { get; set; }
-        public ValidFilesManager()
-        {
-            ValidDataWriter = new ValidDataWriter();
-            AlreadyCheckedFilesMarker = new CheckedFilesMarker();
-        }
-        public int StartWriteNewAndRenameOldFiles(FileSystemInfo tmpFileHolder, StringBuilder dataToWrite, int paramCheckedFilesCounter)
-        {
-            int checkedFilesCounter = paramCheckedFilesCounter;
-            if (ValidDataWriter.WriteValidData(dataToWrite.ToString()))
-            {
-                AlreadyCheckedFilesMarker.MarkFileAsChecked(tmpFileHolder, ref checkedFilesCounter);
-            }
-            return checkedFilesCounter;
-        }
-    }
+        private StringBuilder JsonSerializedObject { get; set; }
+        public ICollection<string> ValidDataCollection { get; set; }
+        private ConcretePatternMatchSearcher MatchSearcher { get; set; }
+        private StringBuilder ValidElements { get; set; }
+        private IPaymentBuilder PaymentBuilder { get; set; }
 
-    public class CustomJsonConverter
-    {
-        public StringBuilder JsonSerializedObject { get; set; }
-        public List<string> ValidDataList { get; set; }
-        public ConcretePatternMatchSearcher MatchSearcher { get; set; }
-        public StringBuilder ValidElements { get; set; }
-        public PaymentBuilder PaymentBuilder { get; set; }
+        private IServicesBuilder ServicesBuilder { get; set; }
 
-        public ServicesBuilder ServicesBuilder { get; set; }
+        private IPayerBuilder PayerBuilder { get; set; }
 
-        public PayerBuilder PayerBuilder { get; set; }
-
-        public CustomJsonConverter()
+        public DataToJsonConverter()
         {
             JsonSerializedObject = new StringBuilder();
-            ValidDataList = new List<string>();
+            ValidDataCollection = new List<string>();
             MatchSearcher = new ConcretePatternMatchSearcher();
             ValidElements = new StringBuilder();
             PaymentBuilder = new PaymentBuilder();
             ServicesBuilder = new ServicesBuilder();
             PayerBuilder = new PayerBuilder();
         }
-        public StringBuilder ConvertValidLinesToJsonObjects()
+        public StringBuilder ConvertValidDataToJsonObjects()
         {
             JsonSerializedObject.Clear();
-            foreach (var item in ValidDataList)
+            foreach (var item in ValidDataCollection)
             {
                 ValidElements.Clear();
                 MatchSearcher.FindMatch(item, Patterns.Adress);
@@ -273,233 +541,97 @@ namespace ETL
             return JsonSerializedObject;
         }
     }
-
-    public interface IPaymentBuilder
+    public class ConvertedFilesDeleter
     {
-        void BuildCity(string city);
-        void BuildServices(Service service);
-        void BuildTotal(long total);
-    }
-    public interface IServicesBuilder
-    {
-        void BuildName(string name);
-        void BuildPayer(Payer payer);
-        void BuildTotal(long total);
-    }
-    public interface IPayerBuilder
-    {
-        void BuildName(string name);
-        void BuildPayment(decimal payment);
-        void BuildDate(DateTime date);
-        void BuildAccountNumber(long accountNumber);
-
-    }
-    public class PaymentBuilder : IPaymentBuilder
-    {
-        private Payment _payment = new Payment();
-        public PaymentBuilder()
-        {
-            this.Reset();
-        }
-        public void Reset()
-        {
-            this._payment = new Payment();
-        }
-        public void BuildCity(string city)
-        {
-            this._payment.City = city;
-        }
-
-        public void BuildServices(Service service)
-        {
-            this._payment.Services = service;
-        }
-
-        public void BuildTotal(long total)
-        {
-            this._payment.Total = total;
-        }
-        public Payment GetPayment()
-        {
-            Payment result = this._payment;
-            this.Reset();
-            return result;
-        }
-    }
-    public class ServicesBuilder : IServicesBuilder
-    {
-        private Service _service = new Service();
-        public ServicesBuilder()
-        {
-            this.Reset();
-        }
-        public void Reset()
-        {
-            this._service = new Service();
-        }
-        public void BuildName(string name)
-        {
-            this._service.Name = name;
-        }
-
-        public void BuildPayer(Payer payer)
-        {
-            this._service.Payers = payer;
-        }
-
-        public void BuildTotal(long total)
-        {
-            this._service.Total = total;
-        }
-        public Service GetService()
-        {
-            Service result = this._service;
-            this.Reset();
-            return result;
-        }
-    }
-
-    public class PayerBuilder : IPayerBuilder
-    {
-        private Payer _payer = new Payer();
-        public PayerBuilder()
-        {
-            this.Reset();
-        }
-        public void Reset()
-        {
-            this._payer = new Payer();
-        }
-        public void BuildAccountNumber(long accountNumber)
-        {
-            this._payer.Account_Number = accountNumber;
-        }
-
-        public void BuildDate(DateTime date)
-        {
-            this._payer.Date = date;
-        }
-
-        public void BuildName(string name)
-        {
-            this._payer.Name = name;
-        }
-
-        public void BuildPayment(decimal payment)
-        {
-            this._payer.Payment = payment;
-        }
-        public Payer GetPayer()
-        {
-            Payer result = this._payer;
-            this.Reset();
-            return result;
-        }
-    }
-    public class Payment
-    {
-        public string City { get; set; }
-        public Service Services { get; set; }
-        public decimal Total { get; set; }
-    }
-    public class Service
-    {
-        public string Name { get; set; }
-        public Payer Payers { get; set; }
-        public decimal Total { get; set; }
-
-    }
-    public class Payer
-    {
-        public string Name { get; set; }
-        public decimal Payment { get; set; }
-        public DateTime Date { get; set; }
-        public long Account_Number { get; set; }
-    }
-
-    public static class FileSystemInfoExtension
-    {
-        public static bool FileValidation(this FileSystemInfo difInfo)
-        {
-            if((difInfo.Extension == ".txt" || difInfo.Extension == ".csv") && !difInfo.FullName.Contains("Source"))
-            {
-                return true;
-            }
-            return false;
-        }
-    }
-   
-    public class DataValidator
-    {
-        public static void CheckDataFromConcreteValidFile(string DataToCheck, ICollection<string> validDataHolder)
+        public void DeleteConvertedFile(FileSystemInfo fileToMove)
         {
             try
             {
-                string[] splitedValidDataHolder = DataToCheck.Split("\n", StringSplitOptions.RemoveEmptyEntries);
-                validDataHolder?.Clear();
-                foreach (var item in splitedValidDataHolder)
-                {
-                    if (Regex.Match(item, Patterns.MainPattern).Success)
-                    {
-                        validDataHolder?.Add(item);
-                    }
-                    else
-                    {
-                        LogManager.FoundErrors++;
-                    }
-                }
+                File.Delete(fileToMove.FullName);
             }
             catch (Exception)
             {
                 return;
             }
+        }
 
-        }
+
     }
-    public class DirectoryValidator
+    #endregion
+    //Load
+    #region
+    public sealed class DirectoriesManager
     {
-        public IEnumerable<FileSystemInfo> CheckConcreteDirectory(string path, List<string> invalidFiles)
+        private static DirectoriesManager instance;
+
+        private static string folderAPath;
+        private static string folderBPath;
+        private static DirectoryInfo dailyDirectoryInfo;
+
+        private DirectoriesManager() { }
+
+        public static DirectoriesManager GetInstance()
         {
-            DirectoryInfo validFiles = new DirectoryInfo(path);
-            invalidFiles.AddRange(validFiles.GetFileSystemInfos().Where(e => !e.FileValidation()).Select(f => f.FullName));
-            return validFiles.GetFileSystemInfos().Where(e => e.FileValidation());
+            if (instance == null)
+            {
+                instance = new DirectoriesManager();
+                folderAPath = ConfigurationManager.AppSettings["pathToFolderA"];
+                folderBPath = ConfigurationManager.AppSettings["pathToFolderB"];
+            }
+            return instance;
         }
-    }
-    public class CheckedFilesMarker
-    {
-        public void MarkFileAsChecked(FileSystemInfo fileToMove, ref int checkedFilesCounter)
+        public void CreateDailyDirectory()
         {
-            try
-            {
-                File.Move(fileToMove.FullName, $"{fileToMove.FullName.Replace($"{fileToMove.Name}", $"Source{++checkedFilesCounter}")}{fileToMove.Extension}");
-            }
-            catch (Exception)
-            {
-                return;
-            }
+            dailyDirectoryInfo = Directory.CreateDirectory($"{folderBPath}{DateTime.Now.ToShortDateString().Replace('.', '-')}");
+        }
+        public string GetFolderAPath()
+        {
+            return folderAPath;
+        }
+        public string GetFolderBPath()
+        {
+            return folderBPath;
+        }
+        public DirectoryInfo GetDailyDirectoryInfo()
+        {
+            return dailyDirectoryInfo;
         }
     }
     public class ValidDataWriter
     {
-        public int ValidFilesCounter { get; private set; }
+        private const string fileExtension = "txt";
 
-        public bool WriteValidData(string data)
+        private const string fileName = "Output";
+        public bool WriteValidData(string data, ref int validFilesCounter, string targetDirectoryPath)
         {
-            using (StreamDecorator sd = new StreamDecorator(new FileStream(@$"{DirectoriesManager.DailyDirectoryInfo.FullName}\Output{++ValidFilesCounter}.txt", FileMode.Create, FileAccess.Write, FileShare.None, 0, FileOptions.Asynchronous)))
+            if (File.Exists(@$"{targetDirectoryPath}{fileName}{++validFilesCounter}.{fileExtension}"))
+            {
+                return false;
+            }
+            using (StreamDecorator sd = new StreamDecorator(new FileStream(@$"{targetDirectoryPath}\{fileName}{validFilesCounter}.{fileExtension}", FileMode.CreateNew, FileAccess.Write)))
             {
                 return sd.Write(data);
             }
         }
     }
-    public class ValidFileDataReader
+    public class ValidFilesManager
     {
-        public string ReadFromConcreteValidFile(string path)
+        private ValidDataWriter ValidDataWriter { get; set; }
+        private ConvertedFilesDeleter AlreadyConvertedFilesDeleter { get; set; }
+
+        public int ValidFilesCounter;
+        public ValidFilesManager()
         {
-            using (StreamDecorator sd = new StreamDecorator(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None, 0, FileOptions.Asynchronous)))
+            ValidDataWriter = new ValidDataWriter();
+            AlreadyConvertedFilesDeleter = new ConvertedFilesDeleter();
+        }
+        public void StartWriteValidFiles(FileSystemInfo tmpFileHolder, StringBuilder dataToWrite, string targetDirectoryPath)
+        {
+            if (ValidDataWriter.WriteValidData(dataToWrite.ToString(), ref ValidFilesCounter, targetDirectoryPath)) ;
             {
-                return sd.Read();
+                AlreadyConvertedFilesDeleter.DeleteConvertedFile(tmpFileHolder);
             }
         }
     }
-
+    #endregion Load
 }
