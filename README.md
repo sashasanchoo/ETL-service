@@ -8,7 +8,7 @@ Mike, Wiksen, “Dnipro, Kleparivska 40, 1”,  720.0, 2022-27-05, 7654321, Heat
 Nick, Potter, “Kyiv, Gorodotska 120, 3”,  880.0, 2022-25-03, “3334444”, Parking
 Luke Pan,, “Odessa, Gorodotska 120, 5”,  40.0, 2022-12-07, 2222111, Gas
 
-Save. When the file is processed the service saves the results in a separate folder (B) (the path is specified in the config) in a subfolder (C) with the current date.
+When the file is processed the service saves the results in a separate folder (B) (the path is specified in the config) in a subfolder (C) with the current date.
 
 At the end of the day (midnight) the service stores in the subfolder (C) a file called “meta.log”. The file have the following structure:
 found_errors: Z
